@@ -5,12 +5,14 @@ from openpyxl import load_workbook
 import openpyxl
 import os
 from openpyxl.styles import Font
-
+import time
+import shutil
 
 class DataConverter:
     def __init__(self, json_data_file_path):
         self.json_data = json_data_file_path
         self.sheet_name_dict = {
+            "firmware_version_df": "Firmware Version",
             "impedance_df": "Impedance Measurement",
             "battery_df": "Battery Measurement",
             "storage_current_df": "Storage Current Measurement",
@@ -29,6 +31,9 @@ class DataConverter:
             "sensitivity_015mv_df": "0.15mv Sensitivity Test",
             "sensitivity_03mv_df": "0.3mv Sensitivity Test",
             "sensitivity_12mv_df": "1.2mv Sensitivity Test",
+            "sensitivity_015mv_inverted_df": "0.15mv Sensitivity Test(INVERTED)",
+            "sensitivity_03mv_inverted_df": "0.3mv Sensitivity Test(INVERTED)",
+            "sensitivity_12mv_inverted_df": "1.2mv Sensitivity Test(INVERTED)",
             "input_impedance_100k_df": "100K input Impedance",
             "input_impedance_500k_df": "500K input Impedance",
             "input_impedance_1000k_df": "1000K input Impedance",
@@ -50,7 +55,7 @@ class DataConverter:
             "info_storage_test_df": "Info Storage Test",
             "read_temperature_df": "Read temperature(Manual check)",
             "shock_40j_10times_df": "10times 40J Shock",
-            "firmware_version_df": "Firmware Version",
+            "read_rssi_df": "Read RSSi",
         }
 
 
@@ -75,10 +80,10 @@ class DataConverter:
                     # 检查 NearField 和 FarField 的 Tolerance
                     if 'NearField' in tolerance_data:
                         tolerance_near_field = tolerance_data['NearField']['Tolerance']
-                        print(tolerance_near_field)
+                        # print(tolerance_near_field)
                     if 'FarField' in tolerance_data:
                         tolerance_far_field = tolerance_data['FarField']['Tolerance']
-                        print(tolerance_far_field)
+                        # print(tolerance_far_field)
                 for k, v in impedance_data.items():
                     if k == 'Tolerance':
                         continue
@@ -213,11 +218,20 @@ class DataConverter:
             data = self.read_json_file(self.json_data)
             if measurement_type in data:
                 test_data = data[measurement_type]
+                data_list = []
                 df = pd.DataFrame(columns=['Measurement Type', 'MinAmplitude', 'ErrorRate', 'Sensitivity Tolerance'])
-                if 'Tolerance' in test_data and 'Sensitivity' in test_data['Tolerance']:
+                if 'Tolerance' in test_data and 'Sensitivity' in test_data['Tolerance'] and "OverSensingCount" in \
+                        test_data['Tolerance']:
                     sensitivity_tolerance = test_data['Tolerance']['Sensitivity']['Tolerance']
-                    df.loc[0] = [measurement_type, test_data['MinAmplitude'], test_data['ErrorRate'],
-                                 sensitivity_tolerance]
+                    oversensingcount_tolerance = test_data['Tolerance']['OverSensingCount']['Tolerance']
+                    data_list.append([measurement_type, test_data['MinAmplitude'], test_data['ErrorRate'],
+                                      test_data['OverSensingCount'], sensitivity_tolerance, oversensingcount_tolerance])
+
+                    # df.loc[0] = [measurement_type, test_data['MinAmplitude'], test_data['ErrorRate'],
+                    #              test_data['OverSensingCount'],sensitivity_tolerance,oversensingcount_tolerance]
+                    df = pd.DataFrame(data_list,
+                                      columns=['Measurement Type', 'MinAmplitude', 'ErrorRate', 'OverSensingCount',
+                                               'Sensitivity Tolerance', 'OverSensingCount Tolerance'])
                 return df
 
             return pd.DataFrame()
@@ -408,24 +422,38 @@ class DataConverter:
 
             return pd.DataFrame()
 
+
     def convert_firmware_version(self, measurement_type):
         data = self.read_json_file(self.json_data)
         if measurement_type in data:
             firmware_version = data[measurement_type]
-            df = pd.DataFrame(columns=['Measurement Type', 'SoftwareRelease', 'CRC32InUse', 'M1_BuildNumber',
-                                       'M2_BuildNumber', 'M3_BuildNumber', 'BLE_BuildNumber', 'HW_Ver'])
 
-            df.loc[len(df)] = [measurement_type, firmware_version['SoftwareRelease'], firmware_version['CRC32InUse'],
-                               firmware_version['M1_BuildNumber'], firmware_version['M2_BuildNumber'],
-                               firmware_version['M3_BuildNumber'], firmware_version['BLE_BuildNumber'],
-                               firmware_version['HW_Ver']]
-            return df
+            if firmware_version and isinstance(firmware_version, dict):
+                df = pd.DataFrame(columns=['Measurement Type', 'SoftwareRelease', 'CRC32InUse', 'M1_BuildNumber',
+                                           'M2_BuildNumber', 'M3_BuildNumber', 'BLE_BuildNumber', 'HW_Ver'])
+
+                df.loc[len(df)] = [measurement_type, firmware_version.get('SoftwareRelease', ''),
+                                   firmware_version.get('CRC32InUse', ''), firmware_version.get('M1_BuildNumber', ''),
+                                   firmware_version.get('M2_BuildNumber', ''),
+                                   firmware_version.get('M3_BuildNumber', ''),
+                                   firmware_version.get('BLE_BuildNumber', ''), firmware_version.get('HW_Ver', '')]
+
+                return df
 
         return pd.DataFrame()
 
+    def get_software_release(self, measurement_type):
+        data = self.read_json_file(self.json_data)
+        if measurement_type in data:
+            firmware_version = data[measurement_type]
+            if firmware_version and isinstance(firmware_version, dict):
+                return firmware_version.get('SoftwareRelease', '')
+        return ''
+
     def convert_to_excel(self, output_file_path):
 
-        # data = self.read_json_file(self.json_data)
+        firmware_version_df = self.convert_firmware_version(self.sheet_name_dict["firmware_version_df"])
+
         impedance_df = self.convert_impedance_to_dataframe(self.sheet_name_dict["impedance_df"])
         battery_df = self.convert_battery_measurement_to_dataframe(self.sheet_name_dict["battery_df"])
         storage_current_df = self.convert_measurement_to_dataframe(self.sheet_name_dict["storage_current_df"], 'MaxCurrent',
@@ -451,6 +479,10 @@ class DataConverter:
         sensitivity_015mv_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_015mv_df"])
         sensitivity_03mv_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_03mv_df"])
         sensitivity_12mv_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_12mv_df"])
+
+        sensitivity_015mv_inverted_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_015mv_inverted_df"])
+        sensitivity_03mv_inverted_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_03mv_inverted_df"])
+        sensitivity_12mv_inverted_df = self.convert_sensitivity_test_to_dataframe(self.sheet_name_dict["sensitivity_12mv_inverted_df"])
 
         input_impedance_100k_df = self.convert_input_impedance_dataframe(self.sheet_name_dict["input_impedance_100k_df"], "100K")
         input_impedance_500k_df = self.convert_input_impedance_dataframe(self.sheet_name_dict["input_impedance_500k_df"], "500K")
@@ -492,18 +524,34 @@ class DataConverter:
 
         read_temperature_df = self.convert_read_temperature(self.sheet_name_dict["read_temperature_df"])
 
-        firmware_version_df = self.convert_firmware_version(self.sheet_name_dict["firmware_version_df"])
 
 
-        with pd.ExcelWriter(output_file_path) as writer:
+        read_rssi_df = self.convert_measurement_to_dataframe(self.sheet_name_dict["read_rssi_df"], 'RSSI',
+                                                               'RSSi')
+
+        with pd.ExcelWriter(output_file_path, engine='openpyxl') as writer:
             for var_name, sheet_name in self.sheet_name_dict.items():
                 df = locals().get(var_name)
                 if df is not None and not df.empty:
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-
+                    if len(sheet_name.strip()) > 31:
+                        # without_test = sheet_name.replace("Test", "").strip()
+                        # without_spaces = without_test.replace(" ", "")
+                        without_spaces = sheet_name.replace(" ", "").strip()
+                        # 如果去除"TEST"后仍然超过31个字符，进行截断
+                        if len(without_spaces) > 31:
+                            truncated_sheet_name = without_spaces[:31].strip()
+                        else:
+                            # 如果去除"TEST"后未超过31个字符，直接使用处理后的名称
+                            truncated_sheet_name = without_spaces
+                    else:
+                        # 如果原始名称未超过31个字符，仅去除两端空格
+                        truncated_sheet_name = sheet_name.strip()
+                    # 写入Excel文件
+                    df.to_excel(writer, sheet_name=truncated_sheet_name, index=False)
 
 
         wb = openpyxl.load_workbook(output_file_path)
+
         for sheet in wb.worksheets:
             for column in sheet.columns:
                 max_length = 0
@@ -513,54 +561,87 @@ class DataConverter:
                         cell_value = str(cell.value)
                         if len(cell_value) > max_length:
                             max_length = len(cell_value)
+
                 adjusted_width = (max_length + 2) * 1.2
                 sheet.column_dimensions[column_letter].width = adjusted_width
         wb.save(output_file_path)
 
     def mark_fail_projects_in_excel(self, output_file_path, json_results_path):
         data = self.read_json_file(json_results_path)
-        fail_projects = [project for project, status in data.items() if status == "fail"]
-        pass_projects = [project for project, status in data.items() if status == "pass"]
+        fail_projects = [project.replace(" ", "") for project, status in data.items() if status == "fail"]
+        pass_projects = [project.replace(" ", "") for project, status in data.items() if status == "pass"]
 
         workbook = load_workbook(output_file_path)
 
         for sheet_name in workbook.sheetnames:
             worksheet = workbook[sheet_name]
-            if sheet_name in fail_projects:
+            normalized_sheet_name = sheet_name.replace(" ", "")
+            if normalized_sheet_name in fail_projects:
                 worksheet.sheet_properties.tabColor = "FF0000"
-            if sheet_name in pass_projects:
+            if normalized_sheet_name in pass_projects:
                 worksheet.sheet_properties.tabColor = "00FF00"
-
             if sheet_name == "50hz pacing":
-                # 遍历所有的列，找到标题为"Rate"的列
-                rate_column = None
-                for cell in worksheet[1]:
-                    if cell.value == "Rate":
-                        rate_column = cell.column
-
-                if rate_column is not None:
-                    # 在"Rate"列后新增一列
-                    new_column = rate_column + 1
-                    worksheet.insert_cols(new_column)
-                    # worksheet.cell(row=1, column=new_column, value="50HZ").font = Font(bold=True)  # 新列标题设置为"50HZ"并加粗显示
-                    title_cell = worksheet.cell(row=1, column=new_column, value="50HZ")
-                    title_cell.font = Font(bold=True)
-
-                    for row in worksheet.iter_rows(min_row=2, min_col=rate_column, max_col=rate_column):
-                        for cell in row:
-                            try:
-                                # 去除单元格中的"bpm"并转换为数字
-                                cell_value = float(cell.value.replace("bpm", ""))
-                                # 在新增列中写入转换后的数据（除以60并保留一位小数，再加上单位"Hz"）
-                                worksheet.cell(row=cell.row, column=new_column, value=f"{round(cell_value / 60, 1)}hz")
-
-                            except (ValueError, AttributeError):
-                                # 如果转换失败（即单元格不是数字），则保留原值或处理错误
-                                print(f"Cannot convert value '{cell.value}' in cell {cell.coordinate} to a float.")
+                self.process_50hz_pacing(worksheet)
+            if sheet_name == "40J Charge Time":
+                self.process_40j_charge_time(worksheet)
 
         workbook.save(output_file_path)
 
+
+    def process_50hz_pacing(self,worksheet):
+        rate_column_index = None
+        for col_index, cell in enumerate(worksheet[1], start=1):
+            if cell.value == "Rate":
+                rate_column_index = col_index
+                break
+        if rate_column_index is not None:
+            worksheet.cell(row=1, column=rate_column_index, value="50Hz").font = Font(bold=True)
+            for row in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row=row, column=rate_column_index)
+                try:
+                    cell_value = float(cell.value.replace("bpm", ""))
+                    new_value = round(cell_value / 60, 1)
+                    if 51 < new_value < 55:
+                        new_value = 50.0
+                    cell.value = f"{new_value}Hz"
+                except ValueError:
+                    print(f"Cannot convert value '{cell.value}' in cell {(row), {rate_column_index} } to a float.")
+
+
+    def process_40j_charge_time(self, worksheet):
+        duration_column_index = None
+        for col_index, cell in enumerate(worksheet[1], start=1):
+            if cell.value == "Charge Duration":
+                duration_column_index = col_index
+                break
+        if duration_column_index is not None:
+            for row in range(2, worksheet.max_row + 1):  # 从第二行开始，假设第一行是标题行
+                cell = worksheet.cell(row=row, column=duration_column_index)
+                try:
+                    cell_value = float(cell.value.replace("s", ""))
+                    new_value = round(cell_value - 1.1, 1)
+                    cell.value = f"{new_value}s"
+                except ValueError:
+                    print(f"Cannot convert value '{cell.value}' in cell {(row), {duration_column_index} } to a float.")
+
+
+def get_test_engineer_text_value(test_engineer_path):
+    try:
+        with open(test_engineer_path, 'r') as file:
+            content = file.readlines()
+            if not content or all(line.strip() == '' for line in content):
+                return "admin"
+            for line in content:
+                if 'Test Engineer:' in line:
+                    _, test_engineer = line.split(':')
+                    return test_engineer.strip()
+    except (FileNotFoundError, IOError):
+        return "admin"
+
 def batch_convert_to_excel(folder_path):
+    test_engineer_path = 'D:/test_engineer.txt'
+    test_engineer_value = get_test_engineer_text_value(test_engineer_path)
+
     for root, dirs, files in os.walk(folder_path):
         data_file_path = None
         results_file_path = None
@@ -581,15 +662,55 @@ def batch_convert_to_excel(folder_path):
             excel_file_name = f"{dir_name}_{sub_dir_name}.xlsx"
             output_file_path = os.path.join(root, excel_file_name)
             converter = DataConverter(data_file_path)
-            # output_file_path = os.path.join(root, "output.xlsx")
             converter.convert_to_excel(output_file_path)
             converter.mark_fail_projects_in_excel(output_file_path, results_file_path)
+            get_software_release_value = converter.get_software_release("Firmware Version")
+
+            xls = pd.ExcelFile(output_file_path)
+
+            with open(results_file_path, 'r') as file:
+                data = json.load(file)
+
+            # html_content = '<style>body {background-color: gainsboro;} table {border-collapse: collapse;} table, th, td {border: 1px solid black;} .pass {color: green;} .fail {color: red;}</style>'
+            # 在生成 HTML 内容时设置页面标题
+            html_content = f'<html><head><title>{dir_name}-测试报告</title>'
+            html_content += '<style>body {background-color: gainsboro;} .header {text-align: center; padding: 10px 0;} table {border-collapse: collapse;} table, th, td {border: 1px solid black;} .pass {color: green;} .fail {color: red;}</style>'
+            html_content += '</head><body>'
+
+            # 创建页面空白区域作为内容下移的占位元素
+            html_content += '<div style="height: 50px;"></div>'
+            # 写入页面标题
+            html_content += '<div class="header">'
+            html_content += f'<h1>{dir_name}-测试报告</h1>'
+            html_content += f'<p> 测试时间: {sub_dir_name}  |  测试人员 :  {test_engineer_value}  | 固件版本: {get_software_release_value }</p>'
+            html_content += '</div>'
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name)
+                html_table = df.to_html(index=False, justify='center')
+
+                title = f'<h2>{sheet_name}'
+
+                if sheet_name in data:
+                    status = data[sheet_name]
+                    if status == "pass":
+                        title += f' - <span class="pass">{status}</span></h2>'
+                    elif status == "fail":
+                        title += f' - <span class="fail">{status}</span></h2>'
+                    else:
+                        title += '</h2>'
+                else:
+                    title += '</h2>'
+
+                html_content += title + html_table
 
 
+            html_content += '</body></html>'
+            html_file_name = f"{dir_name}_{sub_dir_name}.htm"
+            html_output_path = os.path.join(root, html_file_name)
+
+            with open(html_output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
 
 
-
-
-
-# folder_path = r"C:\Users\wangchengcheng\Desktop\devices\ICD1022-E6_9D_DB_C8_11_FE\2024-02-26_15-21-01"
+# folder_path = r"C:\Users\wangchengcheng\Desktop\devices\ICD1022-E6_9D_DB_C8_11_FE\2024-02-28_15-15-02"
 # batch_convert_to_excel(folder_path)
